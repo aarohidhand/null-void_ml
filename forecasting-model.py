@@ -5,11 +5,18 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 import joblib
-import os
 import requests
-from datetime import datetime, timedelta
+import os
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
+if os.path.exists(".env"):
+    load_dotenv()
+
+OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
+if not OPENCAGE_API_KEY:
+    print("Error: OPENCAGE_API_KEY is not set in the .env file.")
+    exit()
 
 df = pd.read_csv("rajasthan_solar_wind_data_updated.csv")
 df["DateTime"] = pd.to_datetime(df["DateTime"])
@@ -50,17 +57,12 @@ model = Sequential([
     Dense(len(targets), activation="linear")  
 ])
 
-model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+# model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+# model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test))
 
-model.save("energy_forecast_model.h5")
-joblib.dump(scaler_features, "scaler_features.pkl")
-joblib.dump(scaler_targets, "scaler_targets.pkl")
-
-load_dotenv()
-OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
-if not OPENCAGE_API_KEY:
-    print("Error: OPENCAGE_API_KEY is not set in the .env file.")
-    exit()
+# model.save("energy_forecast_model.h5")
+# joblib.dump(scaler_features, "scaler_features.pkl")
+# joblib.dump(scaler_targets, "scaler_targets.pkl")
 
 location_name = input("Enter the location (City, Country): ")
 
@@ -76,7 +78,6 @@ LONGITUDE = geo_response["results"][0]["geometry"]["lng"]
 
 print(f"LATITUDE: {LATITUDE}, LONGITUDE: {LONGITUDE}")  
 
-
 def get_weather_data(LATITUDE, LONGITUDE):
     all_data = []
     current_date = datetime.now() - timedelta(days=1)
@@ -84,63 +85,52 @@ def get_weather_data(LATITUDE, LONGITUDE):
     while len(all_data) < 24:
         date_str = current_date.strftime("%Y-%m-%d")
         url = f"https://archive-api.open-meteo.com/v1/archive?latitude={LATITUDE}&longitude={LONGITUDE}&start_date={date_str}&end_date={date_str}&hourly=temperature_2m,cloudcover,shortwave_radiation,wind_speed_10m,surface_pressure&timezone=auto"
-        
         response = requests.get(url)
         
-        if response.status_code != 200:
-            current_date -= timedelta(days=1)
-            continue
-        
-        try:
+        if response.status_code == 200:
             data = response.json()
-        except requests.exceptions.JSONDecodeError:
-            current_date -= timedelta(days=1)
-            continue
-        
-        if "hourly" not in data or not all(k in data["hourly"] for k in ["temperature_2m", "cloudcover", "shortwave_radiation", "wind_speed_10m", "surface_pressure"]):
-            current_date -= timedelta(days=1)
-            continue
-        
-        hourly_data = data["hourly"]
-        df = pd.DataFrame({
-            "timestamp": pd.to_datetime(hourly_data["time"]),
-            "Temperature (°C)": hourly_data["temperature_2m"],
-            "Cloud Cover (%)": hourly_data["cloudcover"],
-            "Solar Irradiance (W/m²)": hourly_data["shortwave_radiation"],
-            "Wind Speed (m/s)": hourly_data["wind_speed_10m"],
-            "Air Pressure (hPa)": hourly_data["surface_pressure"],
-        })
-        
-        valid_entries = df.dropna().to_dict(orient="records")
-        if len(valid_entries) == 24:
-            all_data.extend(valid_entries)
-            break
+            hourly_data = data["hourly"]
             
-        else:        
-            current_date -= timedelta(days=1)
-    
-    if not all_data:
-        return None
+            df = pd.DataFrame({
+                "timestamp": pd.to_datetime(hourly_data["time"]),
+                "Temperature (°C)": hourly_data["temperature_2m"],
+                "Cloud Cover (%)": hourly_data["cloudcover"],
+                "Solar Irradiance (W/m²)": hourly_data["shortwave_radiation"],
+                "Wind Speed (m/s)": hourly_data["wind_speed_10m"],
+                "Air Pressure (hPa)": hourly_data["surface_pressure"],
+            })
+            
+            valid_entries = df.dropna().to_dict(orient="records")
+            all_data.extend(valid_entries)
+        
+        current_date -= timedelta(days=1)
     
     final_df = pd.DataFrame(all_data).sort_values("timestamp").tail(24)
+    
+    if len(final_df) < 24:
+        print("Insufficient weather data. Try again later.")
+        return None
+    
     return final_df
 
+def predict_energy():
+    past_24_hours = get_weather_data(LATITUDE, LONGITUDE)
+    if past_24_hours is None or len(past_24_hours) < 24:
+        return
 
-def predict_energy():  
-    past_24_hours = get_weather_data(LATITUDE, LONGITUDE)  
-    if past_24_hours is None or len(past_24_hours) < 24:  
-        return None, None  
+    model = tf.keras.models.load_model("energy_forecast_model.h5", compile=False)
+    model.compile(optimizer="adam", loss=tf.keras.losses.MeanSquaredError(), metrics=["mae"])
+    scaler_features = joblib.load("scaler_features.pkl")
+    scaler_targets = joblib.load("scaler_targets.pkl")
 
-    model = tf.keras.models.load_model("energy_forecast_model.h5", compile=False)  
-    model.compile(optimizer="adam", loss=tf.keras.losses.MeanSquaredError(), metrics=["mae"])  
-    scaler_features = joblib.load("scaler_features.pkl")  
-    scaler_targets = joblib.load("scaler_targets.pkl")  
+    past_24_hours = past_24_hours[features]
+    past_24_scaled = scaler_features.transform(past_24_hours)
+    X_input = np.array(past_24_scaled).reshape(1, 24, past_24_scaled.shape[1])
 
-    past_24_hours = past_24_hours[features]  
-    past_24_scaled = scaler_features.transform(past_24_hours)  
-    X_input = np.array(past_24_scaled).reshape(1, 24, past_24_scaled.shape[1])  
+    prediction_scaled = model.predict(X_input)
+    predicted_output = scaler_targets.inverse_transform(prediction_scaled)
 
-    prediction_scaled = model.predict(X_input)  
-    predicted_output = scaler_targets.inverse_transform(prediction_scaled)  
+    print(f"Predicted Solar Power Output: {predicted_output[0, 0]:.2f} kWh")
+    print(f"Predicted Wind Power Output: {predicted_output[0, 1]:.2f} kWh")
 
-    return predicted_output[0, 0], predicted_output[0, 1]   
+predict_energy()
