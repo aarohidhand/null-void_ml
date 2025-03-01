@@ -87,19 +87,16 @@ def get_weather_data(LATITUDE, LONGITUDE):
         response = requests.get(url)
         
         if response.status_code != 200:
-            print(f"❌ API Request failed for {date_str} | Status Code: {response.status_code}")
             current_date -= timedelta(days=1)
             continue
         
         try:
             data = response.json()
         except requests.exceptions.JSONDecodeError:
-            print(f"❌ API Response was empty or not valid JSON for {date_str}")
             current_date -= timedelta(days=1)
             continue
         
         if "hourly" not in data or not all(k in data["hourly"] for k in ["temperature_2m", "cloudcover", "shortwave_radiation", "wind_speed_10m", "surface_pressure"]):
-            print(f"⚠️ Incomplete data for {date_str}. Trying previous day...")
             current_date -= timedelta(days=1)
             continue
         
@@ -116,41 +113,33 @@ def get_weather_data(LATITUDE, LONGITUDE):
         valid_entries = df.dropna().to_dict(orient="records")
         if len(valid_entries) == 24:
             all_data.extend(valid_entries)
-            print(f"✅ Found complete 24-hour data for {date_str}.")
             break
-        else:
-            print(f"⚠️ Data for {date_str} is incomplete. Retrying previous day...")
-        
+            
+        else:        
         current_date -= timedelta(days=1)
     
     if not all_data:
-        print("❌ Could not find complete 24-hour data in the past days.")
         return None
     
     final_df = pd.DataFrame(all_data).sort_values("timestamp").tail(24)
     return final_df
 
 
-def predict_energy(): 
+def predict_energy():  
+    past_24_hours = get_weather_data(LATITUDE, LONGITUDE)  
+    if past_24_hours is None or len(past_24_hours) < 24:  
+        return None, None  
 
-    past_24_hours = get_weather_data(LATITUDE, LONGITUDE)
-    if past_24_hours is None or len(past_24_hours) < 24:
-        return
+    model = tf.keras.models.load_model("energy_forecast_model.h5", compile=False)  
+    model.compile(optimizer="adam", loss=tf.keras.losses.MeanSquaredError(), metrics=["mae"])  
+    scaler_features = joblib.load("scaler_features.pkl")  
+    scaler_targets = joblib.load("scaler_targets.pkl")  
 
-    model = tf.keras.models.load_model("energy_forecast_model.h5", compile=False)
-    model.compile(optimizer="adam", loss=tf.keras.losses.MeanSquaredError(), metrics=["mae"])
-    scaler_features = joblib.load("scaler_features.pkl")
-    scaler_targets = joblib.load("scaler_targets.pkl")
+    past_24_hours = past_24_hours[features]  
+    past_24_scaled = scaler_features.transform(past_24_hours)  
+    X_input = np.array(past_24_scaled).reshape(1, 24, past_24_scaled.shape[1])  
 
-    past_24_hours = past_24_hours[features]
-    past_24_scaled = scaler_features.transform(past_24_hours)
-    X_input = np.array(past_24_scaled).reshape(1, 24, past_24_scaled.shape[1])
-
-    prediction_scaled = model.predict(X_input)
+    prediction_scaled = model.predict(X_input)  
     predicted_output = scaler_targets.inverse_transform(prediction_scaled)  
-    predicted_output = scaler_targets.inverse_transform(prediction_scaled)
 
-    print(f"Predicted Solar Power Output: {predicted_output[0, 0]:.2f} kWh")
-    print(f"Predicted Wind Power Output: {predicted_output[0, 1]:.2f} kWh")
-
-predict_energy()
+    return predicted_output[0, 0], predicted_output[0, 1]   
