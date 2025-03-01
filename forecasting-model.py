@@ -117,7 +117,7 @@ def get_weather_data(LATITUDE, LONGITUDE):
             break
             
         else:        
-        current_date -= timedelta(days=1)
+            current_date -= timedelta(days=1)
     
     if not all_data:
         return None
