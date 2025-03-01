@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 import joblib
+import os
 import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
